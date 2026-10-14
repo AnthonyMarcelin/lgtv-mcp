@@ -31,10 +31,16 @@ Copy `.env.example` to `.env` and set at least `MCP_BEARER_TOKEN` (long random s
 | `LGTV_HOST` | `192.168.1.x` | TV IP |
 | `LGTV_MAC` | (empty) | MAC for WOL |
 | `LGTV_BROADCAST` | `192.168.1.255` | WOL broadcast |
+| `LGTV_MANIFEST_PATH` | (packaged `manifest_comp.json`) | Override unsigned pairing manifest |
+| `LGTV_EXTRA_PERMISSIONS` | (empty) | Comma list appended to manifest.permissions at pair (needs `--force` re-pair) |
 | `MCP_BIND_HOST` | `0.0.0.0` | HTTP bind |
 | `MCP_PORT` | `8765` | HTTP port |
 | `MCP_BEARER_TOKEN` | (required) | Bearer token |
 | `DATA_DIR` | `/data` | Pairing key + backups |
+
+Pairing uses the unsigned `manifest_comp.json` (no signed certificate). Recent LG firmware blacklists the classic signed manifest.
+
+Settings writes use the luna alert trick (`createAlert`/`closeAlert`). The comp manifest lacks `WRITE_NOTIFICATION_ALERT` and `WRITE_SETTINGS`. Constant `EXTRA_PERMISSIONS` in code is empty by default; set `LGTV_EXTRA_PERMISSIONS=WRITE_NOTIFICATION_ALERT,WRITE_SETTINGS` and re-pair with `--force` if picture/settings writes return insufficient permissions.
 
 Never commit `.env` or the real token.
 
@@ -59,7 +65,7 @@ export $(grep -v '^#' .env | xargs)
 python -m lgtv_mcp.pair
 ```
 
-3. Accept the prompt on the TV (up to 90 s). Use `--force` to re-pair.
+3. Accept the prompt on the TV (up to 90 s). Use `--force` to re-pair (required after changing `LGTV_EXTRA_PERMISSIONS`).
 4. CLI prints redacted TV message summaries and `paired` (never the key).
 5. Key is stored in `$DATA_DIR/.aiopylgtv.sqlite`.
 

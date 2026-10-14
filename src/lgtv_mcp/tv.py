@@ -10,6 +10,11 @@ from bscpylgtv import WebOsClient
 from bscpylgtv.exceptions import PyLGTVPairException
 
 from lgtv_mcp.config import Config
+from lgtv_mcp.manifest import (
+    DEFAULT_CLIENT_STATES,
+    apply_extra_permissions,
+    resolve_manifest_path,
+)
 
 CONNECT_TIMEOUT_S = 10.0
 
@@ -31,10 +36,14 @@ def _map_connect_error(exc: BaseException) -> TVError:
 
 async def create_client(config: Config) -> WebOsClient:
     config.ensure_dirs()
-    return await WebOsClient.create(
+    client = await WebOsClient.create(
         config.lgtv_host,
         key_file_path=str(config.key_file_path),
+        manifest_file_path=str(resolve_manifest_path()),
+        states=list(DEFAULT_CLIENT_STATES),
     )
+    apply_extra_permissions(client.manifest)
+    return client
 
 
 async def is_paired(config: Config) -> bool:

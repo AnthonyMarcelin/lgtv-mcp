@@ -16,6 +16,7 @@ from lgtv_mcp import backups as backup_store
 from lgtv_mcp.backups import BackupError, read_backup, write_backup
 from lgtv_mcp.config import Config, load_config
 from lgtv_mcp.presets import MANUAL_STEPS, get_preset
+from lgtv_mcp.manifest import write_error_message
 from lgtv_mcp.tv import TVError, connected_client, is_paired, read_settings
 from lgtv_mcp.validation import (
     ALLOWED_SETTING_KEYS,
@@ -64,32 +65,38 @@ def create_mcp(config: Config | None = None) -> FastMCP:
     @mcp.tool(description="Power state, current input/app, software info, paired yes/no.")
     async def get_status() -> dict[str, Any]:
         paired = await is_paired(cfg)
-        result: dict[str, Any] = {"paired": paired, "host": cfg.lgtv_host}
+        result: dict[str, Any] = {
+            "paired": paired,
+            "host": cfg.lgtv_host,
+            "power": None,
+            "system_info": None,
+            "software_info": None,
+            "current_input_or_app": None,
+            "inputs": None,
+            "warnings": [],
+        }
+
+        async def _optional(label: str, coro: Any) -> Any:
+            try:
+                return await coro
+            except Exception as exc:
+                result["warnings"].append(f"{label}: {exc}")
+                return None
+
         try:
             async with connected_client(cfg) as client:
-                power = None
-                current_app = None
-                sw = None
-                try:
-                    power = await client.get_power_state()
-                except Exception as exc:
-                    power = {"error": str(exc)}
-                try:
-                    current_app = await client.get_current_app()
-                except Exception as exc:
-                    current_app = {"error": str(exc)}
-                try:
-                    sw = await client.get_software_info()
-                except Exception as exc:
-                    sw = {"error": str(exc)}
-                result.update(
-                    {
-                        "power": power,
-                        "current_input_or_app": current_app,
-                        "software_info": sw,
-                        "paired": bool(client.is_registered()),
-                    }
+                result["paired"] = bool(client.is_registered())
+                result["power"] = await _optional("power", client.get_power_state())
+                result["system_info"] = await _optional(
+                    "system_info", client.get_system_info()
                 )
+                result["software_info"] = await _optional(
+                    "software_info", client.get_software_info()
+                )
+                result["current_input_or_app"] = await _optional(
+                    "current_app", client.get_current_app()
+                )
+                result["inputs"] = await _optional("inputs", client.get_inputs())
         except TVError as exc:
             result["tv_error"] = str(exc)
             result["reachable"] = False
@@ -160,7 +167,7 @@ def create_mcp(config: Config | None = None) -> FastMCP:
         except TVError as exc:
             return {"error": str(exc)}
         except Exception as exc:
-            return {"error": f"TV command failed: {exc}"}
+            return {"error": write_error_message(exc)}
 
         return {
             "ok": True,
@@ -325,7 +332,7 @@ def create_mcp(config: Config | None = None) -> FastMCP:
         except TVError as exc:
             return {"error": str(exc)}
         except Exception as exc:
-            return {"error": f"TV command failed: {exc}"}
+            return {"error": write_error_message(exc)}
 
     @mcp.tool(description="Save current picture settings to a named backup (or auto name).")
     async def backup_settings(name: str | None = None) -> dict[str, Any]:
@@ -379,7 +386,7 @@ def create_mcp(config: Config | None = None) -> FastMCP:
         except TVError as exc:
             return {"error": str(exc)}
         except Exception as exc:
-            return {"error": f"restore failed: {exc}"}
+            return {"error": write_error_message(exc)}
         return {
             "ok": True,
             "restored_from": name,

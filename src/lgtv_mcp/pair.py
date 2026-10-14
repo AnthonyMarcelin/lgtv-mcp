@@ -17,6 +17,7 @@ import websockets
 from websockets.exceptions import InvalidHandshake, InvalidURI, WebSocketException
 
 from lgtv_mcp.config import load_config
+from lgtv_mcp.manifest import assert_unsigned_manifest
 from lgtv_mcp.tv import create_client
 
 PAIR_TIMEOUT_S = 90.0
@@ -35,10 +36,12 @@ def _ssl_ctx() -> ssl.SSLContext:
 
 
 def build_register_msg(client: Any) -> dict[str, Any]:
+    manifest = client.manifest
+    assert_unsigned_manifest(manifest)
     payload: dict[str, Any] = {
         "forcePairing": False,
         "pairingType": "PROMPT",
-        "manifest": client.manifest,
+        "manifest": manifest,
     }
     if client.client_key:
         payload["client-key"] = client.client_key
