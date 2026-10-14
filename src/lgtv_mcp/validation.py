@@ -49,6 +49,9 @@ KNOWN_DYNAMIC_RANGES: frozenset[str] = frozenset(
     }
 )
 
+# Readable on LG OLED C2 (webOS 22, unsigned comp manifest). Excludes keys
+# refused on this TV (gameOptimization, vrr, allm, etc.) and truMotionMode
+# which has no value in game mode.
 DEFAULT_PICTURE_KEYS: list[str] = [
     "pictureMode",
     "backlight",
@@ -61,18 +64,17 @@ DEFAULT_PICTURE_KEYS: list[str] = [
     "hdrDynamicToneMapping",
     "colorGamut",
     "colorTemperature",
-    "truMotionMode",
+    "tint",
     "mpegNoiseReduction",
     "noiseReduction",
     "superResolution",
     "dynamicContrast",
+    "dynamicColor",
+    "smoothGradation",
+    "eyeComfortMode",
+    "realCinema",
     "blackLevel",
     "adjustingLuminance",
-    "gameOptimization",
-    "inputOptimization",
-    "vrr",
-    "allm",
-    "eyeComfortMode",
 ]
 
 # key -> (kind, constraint)
@@ -84,6 +86,7 @@ _ALLOWLIST: dict[str, tuple[str, Any]] = {
     "color": ("int_range", (0, 100)),
     "sharpness": ("int_range", (0, 50)),
     "colorTemperature": ("int_range", (-50, 50)),
+    "tint": ("int_range", (-50, 50)),
     "hdrDynamicToneMapping": ("enum", frozenset({"on", "off", "HGIG"})),
     "gamma": ("enum", frozenset({"low", "medium", "high1", "high2"})),
     "peakBrightness": ("enum", frozenset({"off", "low", "medium", "high"})),
@@ -102,6 +105,10 @@ _ALLOWLIST: dict[str, tuple[str, Any]] = {
     ),
     "superResolution": ("enum", frozenset({"off", "low", "medium", "high"})),
     "dynamicContrast": ("enum", frozenset({"off", "low", "medium", "high"})),
+    "dynamicColor": ("enum", frozenset({"off", "low", "medium", "high"})),
+    "smoothGradation": ("enum", frozenset({"off", "low", "medium", "high"})),
+    "eyeComfortMode": ("enum", frozenset({"on", "off"})),
+    "realCinema": ("enum", frozenset({"on", "off"})),
     "blackLevel": ("enum", frozenset({"low", "high", "auto"})),
 }
 

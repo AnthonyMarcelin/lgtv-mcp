@@ -13,14 +13,23 @@ Streamable HTTP transport (`/mcp`), required Bearer auth, public healthcheck at 
 ## Tools
 
 - `get_status` - power, input/app, software info, paired
-- `get_settings` - read settings (broad default list; missing keys listed)
+- `get_settings` - readable default keys; optional `pic_mode`+`tv_input`; per-key fallback
 - `set_picture_settings` - allowlisted writes, auto backup before write
 - `set_picture_mode` / `set_input` / `power_on` / `power_off`
-- `apply_preset` - `ps5_hdr`, `ps5_sdr` (unknown TV keys ignored)
+- `apply_preset` - `ps5` / `switch2` (aliases `ps5_hdr`, `ps5_sdr`); variants `sdr`/`hdr`
 - `backup_settings` / `restore_settings` / `list_backups`
 - `notify` - on-screen toast
 
-Presets draw from RTINGS C2, HDTVTest, and Cura for the Gamer. Some Game Optimizer / PS5 options stay manual (returned as `manual_steps`).
+Presets draw from RTINGS C2, HDTVTest, and nintendolife Switch 2 HDR notes. Game Optimizer / console options stay manual (`manual_steps`).
+
+## Known limits
+
+Live on LG OLED42C26LB (webOS 22, unsigned comp manifest):
+
+- Refused picture keys (batch or single): `gameOptimization`, `gameGenre`, `inputOptimization`, `vrr`, `allm`, `motionProOLED`, `localDimming`, `hdrMode`, `lowLevelAdjustment`, `whiteBalanceColorTemperature`. `truMotionMode` has no value in game mode.
+- `software_info` often returns 401 with the comp manifest; other status fields may still work.
+- Settings writes work via `set_settings` / `set_picture_settings` (luna alert path) when pairing permissions allow.
+- HDMI / `tv_input` ids vary per home (`ps5` defaults to `hdmi3`, `switch2` to `hdmi2`).
 
 ## Config
 

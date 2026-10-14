@@ -34,6 +34,18 @@ def _map_connect_error(exc: BaseException) -> TVError:
     return TVError(f"TV error: {exc}")
 
 
+def picture_category(
+    category: str = "picture",
+    *,
+    pic_mode: str | None = None,
+    tv_input: str | None = None,
+) -> str:
+    """Build getSystemSettings category; input/mode uses bscpylgtv set_picture_settings form."""
+    if pic_mode is not None and tv_input is not None:
+        return f"{category}${tv_input}.{pic_mode}.2d.x"
+    return category
+
+
 async def create_client(config: Config) -> WebOsClient:
     config.ensure_dirs()
     client = await WebOsClient.create(
@@ -98,15 +110,54 @@ def extract_settings(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _is_batch_key_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "not allowed" in text or "no matched result" in text
+
+
+async def _read_keys_one_by_one(
+    client: WebOsClient,
+    keys: list[str],
+    category: str,
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    found: dict[str, Any] = {}
+    missing: list[str] = []
+    rejected: dict[str, str] = {}
+    for key in keys:
+        try:
+            raw = await client.get_system_settings(category, [key])
+            extracted = extract_settings(raw)
+            if key in extracted:
+                found[key] = extracted[key]
+            else:
+                missing.append(key)
+        except Exception as exc:
+            rejected[key] = str(exc)
+    return found, missing, rejected
+
+
 async def read_settings(
     client: WebOsClient,
     keys: list[str],
     category: str = "picture",
-) -> tuple[dict[str, Any], list[str]]:
-    """Return (found, missing) for the requested keys."""
-    raw = await client.get_system_settings(category, keys)
-    found = extract_settings(raw)
-    # Only keep requested keys that the TV actually returned
-    present = {k: found[k] for k in keys if k in found}
+    *,
+    pic_mode: str | None = None,
+    tv_input: str | None = None,
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    """Return (found, missing, rejected) for the requested keys.
+
+    On batch failure with "not allowed" / "no matched result", reads each key
+    separately so refused keys land in rejected instead of failing the whole call.
+    """
+    cat = picture_category(category, pic_mode=pic_mode, tv_input=tv_input)
+    try:
+        raw = await client.get_system_settings(cat, keys)
+    except Exception as exc:
+        if _is_batch_key_error(exc):
+            return await _read_keys_one_by_one(client, keys, cat)
+        raise
+
+    found_all = extract_settings(raw)
+    present = {k: found_all[k] for k in keys if k in found_all}
     missing = [k for k in keys if k not in present]
-    return present, missing
+    return present, missing, {}

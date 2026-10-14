@@ -15,7 +15,7 @@ from lgtv_mcp.auth import StaticBearerVerifier
 from lgtv_mcp import backups as backup_store
 from lgtv_mcp.backups import BackupError, read_backup, write_backup
 from lgtv_mcp.config import Config, load_config
-from lgtv_mcp.presets import MANUAL_STEPS, get_preset
+from lgtv_mcp.presets import resolve_preset_variants
 from lgtv_mcp.manifest import write_error_message
 from lgtv_mcp.tv import TVError, connected_client, is_paired, read_settings
 from lgtv_mcp.validation import (
@@ -107,29 +107,53 @@ def create_mcp(config: Config | None = None) -> FastMCP:
     @mcp.tool(
         description=(
             "Read system settings via get_system_settings. "
-            "If keys is null, use a broad default picture list. "
-            "Returns found keys and missing ones for discovery. "
+            "If keys is null, use the readable default picture list. "
+            "Optional pic_mode+tv_input reads picture$<input>.<mode>.2d.x. "
+            "Batch key errors fall back to per-key reads "
+            "(found / missing / rejected). "
             "category: picture, aiPicture, or other."
         )
     )
     async def get_settings(
         keys: list[str] | None = None,
         category: str = "picture",
+        pic_mode: str | None = None,
+        tv_input: str | None = None,
     ) -> dict[str, Any]:
         if category not in ("picture", "aiPicture", "other"):
             return {"error": f"invalid category {category!r}; use picture, aiPicture, or other"}
+        if (pic_mode is None) ^ (tv_input is None):
+            return {"error": "pic_mode and tv_input must be set together"}
+        if pic_mode is not None:
+            try:
+                pic_mode = validate_picture_mode(pic_mode)
+            except ValidationError as exc:
+                return {"error": str(exc)}
         key_list = list(keys) if keys else list(DEFAULT_PICTURE_KEYS)
         try:
             async with connected_client(cfg) as client:
-                found, missing = await read_settings(client, key_list, category=category)
+                found, missing, rejected = await read_settings(
+                    client,
+                    key_list,
+                    category=category,
+                    pic_mode=pic_mode,
+                    tv_input=tv_input,
+                )
         except TVError as exc:
             return {"error": str(exc)}
-        return {
+        except Exception as exc:
+            return {"error": f"TV command failed: {exc}"}
+        result: dict[str, Any] = {
             "category": category,
             "requested": key_list,
             "found": found,
             "missing": missing,
+            "rejected": rejected,
         }
+        if pic_mode is not None and tv_input is not None:
+            result["pic_mode"] = pic_mode
+            result["tv_input"] = tv_input
+        return result
 
     @mcp.tool(
         description=(
@@ -152,7 +176,13 @@ def create_mcp(config: Config | None = None) -> FastMCP:
         keys = list(cleaned.keys())
         try:
             async with connected_client(cfg) as client:
-                before, _missing = await read_settings(client, keys, category="picture")
+                before, _missing, _rej = await read_settings(
+                    client,
+                    keys,
+                    category="picture",
+                    pic_mode=pic_mode,
+                    tv_input=tv_input,
+                )
                 backup_path = write_backup(
                     cfg.backups_dir,
                     before,
@@ -163,7 +193,13 @@ def create_mcp(config: Config | None = None) -> FastMCP:
                     await client.set_picture_settings(cleaned, pic_mode, tv_input)
                 else:
                     await client.set_settings("picture", cleaned)
-                after, _ = await read_settings(client, keys, category="picture")
+                after, _, _ = await read_settings(
+                    client,
+                    keys,
+                    category="picture",
+                    pic_mode=pic_mode,
+                    tv_input=tv_input,
+                )
         except TVError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -267,78 +303,124 @@ def create_mcp(config: Config | None = None) -> FastMCP:
 
     @mcp.tool(
         description=(
-            "Apply a named preset (ps5_hdr, ps5_sdr). "
-            "Skips keys the TV does not return (unknown). "
-            "dry_run returns the plan only. Includes manual_steps for non-API items."
+            "Apply a named preset (ps5, switch2; aliases ps5_hdr, ps5_sdr). "
+            "variants defaults to [sdr, hdr]. Each variant uses the preset "
+            "tv_input and writes via set_picture_settings (luna per input/mode). "
+            "Skips rejected/missing keys. One variant failure does not stop others. "
+            "dry_run plans only. Includes manual_steps for non-API items."
         )
     )
     async def apply_preset(
         name: str,
-        tv_input: str = "hdmi1",
+        variants: list[str] | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         try:
-            preset = get_preset(name)
+            base_name, preset, variant_names = resolve_preset_variants(name, variants)
         except KeyError as exc:
             return {"error": str(exc)}
 
-        settings = dict(preset["settings"])
-        pic_mode = preset["pic_mode"]
-        confirmed = list(preset["confirmed_keys"])
+        tv_input = preset["tv_input"]
+        result: dict[str, Any] = {
+            "preset": base_name,
+            "requested_as": name,
+            "manual_steps": list(preset["manual_steps"]),
+            "dry_run": dry_run,
+        }
 
         try:
             async with connected_client(cfg) as client:
-                present, missing = await read_settings(client, confirmed, category="picture")
-                unknown = [k for k in confirmed if k not in present]
-                to_apply = {k: v for k, v in settings.items() if k not in unknown}
+                for variant_name in variant_names:
+                    variant = preset["variants"].get(variant_name)
+                    if variant is None:
+                        result[variant_name] = {
+                            "error": (
+                                f"unknown variant {variant_name!r}; "
+                                f"available: {sorted(preset['variants'])}"
+                            ),
+                        }
+                        continue
 
-                plan = {
-                    "preset": name,
-                    "pic_mode": pic_mode,
-                    "tv_input": tv_input,
-                    "to_apply": to_apply,
-                    "skipped_unknown_keys": unknown,
-                    "tv_returned": present,
-                    "manual_steps": list(MANUAL_STEPS),
-                    "dry_run": dry_run,
-                }
-                if dry_run:
-                    return plan
+                    pic_mode = variant["pic_mode"]
+                    settings = dict(variant["settings"])
+                    keys = list(settings.keys())
+                    entry: dict[str, Any] = {
+                        "pic_mode": pic_mode,
+                        "tv_input": tv_input,
+                    }
+                    try:
+                        before, missing, rejected = await read_settings(
+                            client,
+                            keys,
+                            category="picture",
+                            pic_mode=pic_mode,
+                            tv_input=tv_input,
+                        )
+                        skipped: dict[str, str] = {
+                            **rejected,
+                            **{k: "missing" for k in missing},
+                        }
+                        to_apply = {
+                            k: v for k, v in settings.items() if k not in skipped
+                        }
+                        entry["before"] = before
+                        entry["skipped"] = skipped
+                        entry["to_apply"] = to_apply
 
-                if unknown:
-                    # still apply the rest
-                    pass
+                        if dry_run:
+                            entry["after"] = None
+                            result[variant_name] = entry
+                            continue
 
-                backup_path = None
-                if to_apply:
-                    before_keys = list(to_apply.keys())
-                    before, _ = await read_settings(client, before_keys, category="picture")
-                    backup_path = write_backup(
-                        cfg.backups_dir,
-                        before,
-                        category="picture",
-                        meta={"reason": f"auto-before-preset-{name}", "keys": before_keys},
-                    )
-                    await client.set_picture_mode(pic_mode, tv_input)
-                    await client.set_picture_settings(to_apply, pic_mode, tv_input)
-                    after, _ = await read_settings(client, before_keys, category="picture")
-                    plan["backup"] = backup_path.name
-                    plan["before"] = before
-                    plan["after"] = after
-                else:
-                    plan["note"] = "no known keys to apply"
-                plan["ok"] = True
-                return plan
+                        if to_apply:
+                            backup_path = write_backup(
+                                cfg.backups_dir,
+                                before,
+                                category="picture",
+                                meta={
+                                    "reason": (
+                                        f"auto-before-preset-{base_name}-{variant_name}"
+                                    ),
+                                    "keys": list(to_apply.keys()),
+                                    "pic_mode": pic_mode,
+                                    "tv_input": tv_input,
+                                },
+                            )
+                            await client.set_picture_settings(
+                                to_apply, pic_mode, tv_input
+                            )
+                            after, _, _ = await read_settings(
+                                client,
+                                list(to_apply.keys()),
+                                category="picture",
+                                pic_mode=pic_mode,
+                                tv_input=tv_input,
+                            )
+                            entry["backup"] = backup_path.name
+                            entry["after"] = after
+                        else:
+                            entry["after"] = before
+                            entry["note"] = "no writable keys to apply"
+                        result[variant_name] = entry
+                    except Exception as exc:
+                        entry["error"] = write_error_message(exc)
+                        result[variant_name] = entry
         except TVError as exc:
             return {"error": str(exc)}
         except Exception as exc:
             return {"error": write_error_message(exc)}
 
+        result["ok"] = all(
+            isinstance(result.get(v), dict) and "error" not in result[v]
+            for v in variant_names
+        )
+        return result
+
     @mcp.tool(description="Save current picture settings to a named backup (or auto name).")
     async def backup_settings(name: str | None = None) -> dict[str, Any]:
         try:
             async with connected_client(cfg) as client:
-                found, missing = await read_settings(
+                found, missing, rejected = await read_settings(
                     client, list(DEFAULT_PICTURE_KEYS), category="picture"
                 )
                 path = write_backup(
@@ -346,7 +428,10 @@ def create_mcp(config: Config | None = None) -> FastMCP:
                     found,
                     name=name,
                     category="picture",
-                    meta={"missing_at_backup": missing},
+                    meta={
+                        "missing_at_backup": missing,
+                        "rejected_at_backup": rejected,
+                    },
                 )
         except TVError as exc:
             return {"error": str(exc)}
@@ -354,7 +439,13 @@ def create_mcp(config: Config | None = None) -> FastMCP:
             return {"error": str(exc)}
         except Exception as exc:
             return {"error": f"backup failed: {exc}"}
-        return {"ok": True, "backup": path.name, "keys": sorted(found.keys()), "missing": missing}
+        return {
+            "ok": True,
+            "backup": path.name,
+            "keys": sorted(found.keys()),
+            "missing": missing,
+            "rejected": rejected,
+        }
 
     @mcp.tool(description="Restore picture settings from a named backup file.")
     async def restore_settings(name: str) -> dict[str, Any]:
@@ -370,7 +461,7 @@ def create_mcp(config: Config | None = None) -> FastMCP:
 
             async with connected_client(cfg) as client:
                 keys = list(cleaned.keys())
-                before, _ = await read_settings(client, keys, category="picture")
+                before, _, _ = await read_settings(client, keys, category="picture")
                 auto = write_backup(
                     cfg.backups_dir,
                     before,
@@ -378,7 +469,7 @@ def create_mcp(config: Config | None = None) -> FastMCP:
                     meta={"reason": f"auto-before-restore-{name}"},
                 )
                 await client.set_settings("picture", cleaned)
-                after, _ = await read_settings(client, keys, category="picture")
+                after, _, _ = await read_settings(client, keys, category="picture")
         except BackupError as exc:
             return {"error": str(exc)}
         except ValidationError as exc:

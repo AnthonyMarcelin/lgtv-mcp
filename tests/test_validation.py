@@ -18,10 +18,18 @@ def test_valid_settings():
             "sharpness": 0,
             "hdrDynamicToneMapping": "HGIG",
             "colorTemperature": -10,
+            "tint": -5,
+            "dynamicColor": "off",
+            "smoothGradation": "medium",
+            "eyeComfortMode": "off",
+            "realCinema": "on",
         }
     )
     assert out["backlight"] == 80
     assert out["hdrDynamicToneMapping"] == "HGIG"
+    assert out["tint"] == -5
+    assert out["dynamicColor"] == "off"
+    assert out["eyeComfortMode"] == "off"
 
 
 def test_unknown_key_rejected():
@@ -36,6 +44,8 @@ def test_out_of_bounds_rejected():
         validate_picture_settings({"sharpness": 51})
     with pytest.raises(ValidationError, match="out of bounds"):
         validate_picture_settings({"colorTemperature": -51})
+    with pytest.raises(ValidationError, match="out of bounds"):
+        validate_picture_settings({"tint": 51})
 
 
 def test_enum_rejected():
